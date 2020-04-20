@@ -1,0 +1,8 @@
+{
+    "params" : {
+        "dbname" : "",
+        "user" : "",
+        "host": "",
+        "password" : ""
+    }
+}

@@ -1,0 +1,11 @@
+credentials
+.ipynb_checkpoints
+__pycache__
+catalogues
+db
+demo
+data/*
+!data/ztf_filters
+test*.ipynb
+random_analysis.ipynb
+NOTES
