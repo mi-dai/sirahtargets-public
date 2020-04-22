@@ -10,12 +10,15 @@ from astropy.time import Time
 from datetime import datetime,date
 from io import BytesIO
 import pickle
-from matplotlib.backends.backend_pgf import PdfPages
+from matplotlib.backends.backend_pdf import PdfPages 
+#if using latex see https://matplotlib.org/gallery/misc/multipage_pdf.html
+#from matplotlib.backends.backend_pgf import PdfPages 
 from astropy.cosmology import FlatLambdaCDM
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from tnsScrape import get_tns_name
 from astropy.table import Table
+import warnings
 
 def get_mu(z):
     cosmo = FlatLambdaCDM(H0=70, Om0=0.3)
@@ -27,14 +30,17 @@ def cal_maglim(z, magabs=-19.1):
     mag = magabs + cosmo.distmod(z).value
     return mag
     
-def plot_maglims(band='r',z=0.,phase=[0.,-4.,-7.,-10.,-13.,-15.],magabs=-19.1):
+def plot_maglims(band='r',z=0.,phase=[0.,-4.,-7.,-10.,-13.,-15.],magabs=-19.1,sedmodel='salt2',sedmodel_pardict=None,**kwargs):
     zarr = np.linspace(0.01,0.08,30)
     mag = cal_maglim(zarr, magabs=magabs)
-    dmag = get_dmag(band,z,phase=phase)['dmag']
-    for d,p in zip(dmag,phase):
-        plt.plot(zarr, mag+d, label='phase={:.1f} (dmag={:.2f})'.format(p,d))  
+    #reorder phase in decreasing order
+    phase = np.sort(phase)[::-1]
+    dmag = get_dmag(band,z,phase=phase,sedmodel=sedmodel,sedmodel_pardict=sedmodel_pardict)['dmag']
+    colors = plt.cm.Blues(np.linspace(0.5,1,len(phase)))
+    for i,(d,p) in enumerate(zip(dmag,phase)):
+        plt.plot(zarr, mag+d, label='phase={:.1f} (dmag={:.2f})'.format(p,d),c=colors[i])  
     plt.axhline(y=20.5,ls=':',color='k',label='ztf limit')
-    plt.legend(bbox_to_anchor=(1.05,1))
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
     plt.xlabel('z')
     plt.ylabel('mag')
 
@@ -121,25 +127,29 @@ def _query_timeseries_ztf(oid,plotlc=False,broker='alerce'):
         results["LC_nondet"] = lasair.queryresult
 
     if plotlc:
-        plotLC(oid, results["LC_det"], results["LC_nondet"], source='ztf')
+        plotLC(oid, results["LC_det"], results["LC_nondet"], source='ztf',**kwargs)
         plt.show()
         
     return results
 
-def get_dmag(band,z,phase=None,x1=0.):
+def get_dmag(band,z,phase=None,x1=0.,sedmodel='salt2',sedmodel_pardict=None):
     register_ztf_bandpass(band)
     if phase is None:
         phase = np.arange(-17,20,1)
     else:
         phase = np.array(phase)
-    model = sncosmo.Model(source='salt2')
+    model = sncosmo.Model(source=sedmodel)
     model.set(z=z)
-    model.set(x1=x1)
+    if sedmodel == 'salt2':
+        model.set(x1=x1)
+    elif isinstance(sedmodel_pardict,dict):
+        model.update(sedmodel_pardict)
     time = phase*(1.+z)
-    modelmag = model.bandmag('ztf'+band,'ab',time) #bandmag() takes time instead of phase
+    sortidx = np.argsort(time) #time must be monotonically increasing for timeseries models
+    modelmag = model.bandmag('ztf'+band,'ab',time[sortidx]) #bandmag() takes time instead of phase
     modelmag_peak = model.bandmag('ztf'+band,'ab',0.)
     dmag = modelmag - modelmag_peak  
-    return {'dmag':dmag,'time':time,'z':z} 
+    return {'dmag':dmag[sortidx],'time':time,'z':z} #preserve the original order
 
 def interp_lc(t,lc,mag=0.):
     idx = np.isfinite(lc)
@@ -154,9 +164,10 @@ def get_peakmjd(func,mjd):
     peakmjd = mjd - p     
     return peakmjd
 
-def plot_lc_prediction(band,z,mag,mjd,magabs=-19.1):
+def plot_lc_prediction(band,z,mag,mjd,magabs=-19.1,sedmodel='salt2',sedmodel_pardict=None):
     
-    dmagres = get_dmag(band,z, phase=np.linspace(-17,20,50))
+    dmagres = get_dmag(band,z, phase=np.linspace(-17,20,50),sedmodel=sedmodel,
+                       sedmodel_pardict=sedmodel_pardict)
     dmag = dmagres['dmag']
     dmagres_pos_x1 = get_dmag(band,z, phase=np.linspace(-17,20,50),x1=2.)
     dmag_pos = dmagres_pos_x1['dmag']
@@ -184,7 +195,7 @@ def plot_lc_prediction(band,z,mag,mjd,magabs=-19.1):
     except:
         print("Can't estimate phase")
         if func(-20)*func(0)>0:
-            print("The given mag is out of the salt2 model range given the redshift")
+            print("The given mag is out of the sed model range given the redshift")
             result['peakmjd'] = np.nan
     try:
         peakmjd_pos = get_peakmjd(func_pos,mjd)
@@ -195,7 +206,7 @@ def plot_lc_prediction(band,z,mag,mjd,magabs=-19.1):
     except:
         print("Can't estimate phase")
         if func_pos(-20)*func_pos(0)>0:
-            print("Higer Limit ({}): The given mag is out of the salt2 model range given the redshift".format(band))
+            print("Higer Limit ({}): The given mag is out of the sed model range given the redshift".format(band))
     try:        
         peakmjd_neg = get_peakmjd(func_neg,mjd)
         time_neg = t + peakmjd_neg
@@ -205,7 +216,7 @@ def plot_lc_prediction(band,z,mag,mjd,magabs=-19.1):
     except:
         print("Can't estimate phase")
         if func_neg(-20)*func_neg(0)>0:
-            print("Lower Limit ({}): The given mag is out of the salt2 model range given the redshift".format(band))
+            print("Lower Limit ({}): The given mag is out of the sed model range given the redshift".format(band))
     
     return result
 
@@ -238,15 +249,15 @@ def aladin(ra,dec):
     aladinres = ipyal.Aladin(target=target,fov=0.02,survey='P/PanSTARRS/DR1/color/z/zg/g')
     return aladinres
 
-def plotLC(oid, SN_det, SN_nondet, source='ztf', figsize=None, plot_ylim=(21,15)):
+def plotLC(oid, SN_det, SN_nondet, source='ztf', figsize=None, plot_ylim=(21,15),**kwargs):
     if source == 'ztf':
-        return _plotLC_ztf(oid, SN_det, SN_nondet, figsize=figsize, plot_ylim=plot_ylim)
+        return _plotLC_ztf(oid, SN_det, SN_nondet, figsize=figsize, plot_ylim=plot_ylim,**kwargs)
     elif source == 'tns':
-        return _plotLC_tns(oid, SN_det, SN_nondet, figsize=figsize, plot_ylim=plot_ylim)
+        return _plotLC_tns(oid, SN_det, SN_nondet, figsize=figsize, plot_ylim=plot_ylim,**kwargs)
     else:
         return
 
-def _plotLC_tns(oid, SN_det, SN_nondet, figsize=None,plot_ylim=(21,15)):
+def _plotLC_tns(oid, SN_det, SN_nondet, figsize=None,plot_ylim=(21,15),plot_xlim=None,**kwargs):
 
     fig, ax = plt.subplots(figsize = figsize)
     
@@ -286,12 +297,15 @@ def _plotLC_tns(oid, SN_det, SN_nondet, figsize=None,plot_ylim=(21,15)):
     ax.set_ylabel("Magnitude")
     ax.legend()
     ax.set_ylim(plot_ylim)
-    ax.set_xlim((SN_det.mjd.max()-30,SN_det.mjd.max()+30))
+    if plot_xlim is None:
+        ax.set_xlim((SN_det.mjd.max()-30,SN_det.mjd.max()+30))
+    else:
+        ax.set_xlim(plot_xlim)
     
     return fig, ax
 
 
-def _plotLC_ztf(oid, SN_det, SN_nondet, figsize=None, plot_ylim=(21,15)):
+def _plotLC_ztf(oid, SN_det, SN_nondet, figsize=None, plot_ylim=(21,15),plot_xlim=None,**kwargs):
     """
     adopted from alerce notebooks
     """
@@ -318,11 +332,14 @@ def _plotLC_ztf(oid, SN_det, SN_nondet, figsize=None, plot_ylim=(21,15)):
     ax.set_ylabel("Magnitude")
     ax.legend()
     ax.set_ylim(plot_ylim)
-    ax.set_xlim((SN_det.mjd.max()-30,SN_det.mjd.max()+30))
+    if plot_xlim is None:
+        ax.set_xlim((SN_det.mjd.max()-30,SN_det.mjd.max()+30))
+    else:
+        ax.set_xlim(plot_xlim)
 
     return fig, ax
 
-def plot_extra_lc(SN, plot_prediction=False, z=None,magabs=None):
+def plot_extra_lc(SN, plot_prediction=False, z=None,magabs=None,sedmodel='salt2',sedmodel_pardict=None):
     colormap = {'o':'orange','c':'cyan','g':'g','r':'r','orange':'orange','cyan':'cyan'}
     for f in SN['filter'].unique():
         SN_f = SN[SN['filter']==f].sort_values('mjd')
@@ -331,12 +348,15 @@ def plot_extra_lc(SN, plot_prediction=False, z=None,magabs=None):
             mjd = SN[SN['filter'] == f].mjd.max()
             mag = SN[(SN['filter'] == f) & (SN.mjd == mjd)].mag.values[0]
             if f in 'gr':
-                res = plot_lc_prediction(f,z,mag,mjd,magabs=magabs)
+                res = plot_lc_prediction(f,z,mag,mjd,magabs=magabs,sedmodel=sedmodel,
+                                         sedmodel_pardict=sedmodel_pardict)
             elif f[0] in 'oc':
                 fmap = {'o':'r','c':'g'}
-                res = plot_lc_prediction(fmap[f[0]],z,mag,mjd,magabs=magabs)
+                res = plot_lc_prediction(fmap[f[0]],z,mag,mjd,magabs=magabs,sedmodel=sedmodel,
+                                         sedmodel_pardict=sedmodel_pardict)
             else:
-                res = plot_lc_prediction('g',z,mag,mjd,magabs=magabs)
+                res = plot_lc_prediction('g',z,mag,mjd,magabs=magabs,sedmodel=sedmodel,
+                                         sedmodel_pardict=sedmodel_pardict)
         else:
             res = {'peakmjd': np.inf}
     return res
@@ -424,7 +444,8 @@ def gen_outside_links(oid,source=None):
         raise ValueError("source not found")
         
 def gen_plots(row,interactive=False,pdf_file=None,magabs=-19.1,extra_lc=False,lc_prediction=True,update_lc_prediction=False,
-              last_detection_max=5,source='ztf',plot_ylim=(21,15),broker='alerce',ps1_image_size=320,plot_salt2_lc=False):
+              last_detection_max=5,source='ztf',plot_ylim=(21,15),broker='alerce',ps1_image_size=320,plot_salt2_lc=False,
+              sedmodel='salt2',sedmodel_pardict=None,**kwargs):
     
     from IPython.core.display import HTML
     today = Time(datetime.today()).mjd 
@@ -467,27 +488,32 @@ def gen_plots(row,interactive=False,pdf_file=None,magabs=-19.1,extra_lc=False,lc
 #     print(res) 
 
     # light curve
-    fig, ax = plotLC(oid, res["LC_det"], res["LC_nondet"],figsize=(7,5),source=source,plot_ylim=plot_ylim)
+    fig, ax = plotLC(oid, res["LC_det"], res["LC_nondet"],figsize=(7,5),source=source,plot_ylim=plot_ylim,**kwargs)
     lc_det = res['LC_det']
     
-    if plot_salt2_lc:
-        salt2res = fit_salt2(lc_det,z,mwebv)
-        salt2pars = {}
-        for pname,p in zip(salt2res['param_names'],salt2res['parameters']):
-            salt2pars[pname] = p
-        print(salt2pars)
-        if 'mwebv' in salt2pars.keys():
-            del salt2pars['mwebv']
+    if plot_salt2_lc: 
+        if source=='ztf':
+            salt2res = fit_salt2(lc_det,z,mwebv)
+            salt2pars = {}
+            for pname,p in zip(salt2res['param_names'],salt2res['parameters']):
+                salt2pars[pname] = p
+            print(salt2pars)
+            if 'mwebv' in salt2pars.keys():
+                del salt2pars['mwebv']
+        else:
+            warnings.warn("Can only fit SALT2 for ZTF detections")
+            salt2pars = None
     
     if source == 'ztf':
         if 1 in lc_det.fid.unique():
             mjd_g = lc_det[lc_det.fid == 1].mjd.max()
             mag_g = lc_det[(lc_det.fid == 1) & (lc_det.mjd == mjd_g)].magpsf_dered.values
             if lc_prediction:
-                resg = plot_lc_prediction('g',z,mag_g,mjd_g,magabs=magabs)
+                resg = plot_lc_prediction('g',z,mag_g,mjd_g,magabs=magabs,sedmodel=sedmodel,
+                                          sedmodel_pardict=sedmodel_pardict)
             else:
                 resg = {'peakmjd': np.inf}
-            if plot_salt2_lc:
+            if plot_salt2_lc and salt2pars is not None:
                 plot_salt2(salt2pars,'g')
         else:
             mjd_g = -99.
@@ -496,10 +522,11 @@ def gen_plots(row,interactive=False,pdf_file=None,magabs=-19.1,extra_lc=False,lc
             mjd_r = lc_det[lc_det.fid == 2].mjd.max()
             mag_r = lc_det[(lc_det.fid == 2) & (lc_det.mjd == mjd_r)].magpsf_dered.values
             if lc_prediction:
-                resr = plot_lc_prediction('r',z,mag_r,mjd_r,magabs=magabs) 
+                resr = plot_lc_prediction('r',z,mag_r,mjd_r,magabs=magabs,sedmodel=sedmodel,
+                                          sedmodel_pardict=sedmodel_pardict) 
             else:
                 resr = {'peakmjd': np.inf}
-            if plot_salt2_lc:
+            if plot_salt2_lc and salt2pars is not None:
                 plot_salt2(salt2pars,'r')
         else:
             mjd_r = -99.
@@ -510,7 +537,8 @@ def gen_plots(row,interactive=False,pdf_file=None,magabs=-19.1,extra_lc=False,lc
         mjd_g = lc_det.mjd.max()
         mag_g = lc_det[lc_det.mjd == mjd_g].mag_dered.values
         if lc_prediction:
-            resg = plot_lc_prediction('g',z,mag_g,mjd_g,magabs=magabs)
+            resg = plot_lc_prediction('g',z,mag_g,mjd_g,magabs=magabs,sedmodel=sedmodel,
+                                      sedmodel_pardict=sedmodel_pardict)
         else:
             resg = {'peakmjd': np.inf}
         mjd_r = -99.
@@ -537,7 +565,7 @@ def gen_plots(row,interactive=False,pdf_file=None,magabs=-19.1,extra_lc=False,lc
     peakmjd = np.min([resg['peakmjd'],resr['peakmjd']])
     if update_lc_prediction and extra_lc:
         peakmjd = np.min([peakmjd,res_extra['peakmjd']])
-    if plot_salt2_lc:
+    if plot_salt2_lc and salt2pars is not None:
         peakmjd = salt2pars['t0']
         plt.axvline(x=peakmjd,color='purple',ls=':',label='salt2-t0')
         plt.legend(bbox_to_anchor=(1.15, 1), loc='upper left', borderaxespad=0.)
@@ -581,7 +609,7 @@ def gen_plots(row,interactive=False,pdf_file=None,magabs=-19.1,extra_lc=False,lc
         plt.errorbar(z,mag_g,xerr=zerr,fmt='g*',label='mag-latest (offset from tuesday={:.1f} days)'.format(next_tuesday-mjd_g))
 
     plt.ylim(plot_ylim)
-    plot_maglims(band='r',z=z,magabs=magabs)
+    plot_maglims(band='r',z=z,magabs=magabs,**kwargs)
     plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
     plt.title(oid)
     plt.tight_layout()

@@ -170,7 +170,7 @@ class SIRAHPipe():
 #                 cut_to_run = getattr(self.MakeCuts,flag)
 #                 cut_to_run(**kwargs)
 #                 self.MakeCuts.show_stats(flag='flag_'+flag)
-            self.MakeCuts.plot()
+            self.MakeCuts.plot(**kwargs)
             self.results = self.MakeCuts.data
         else:
             raise RuntimeError("Empty queries.")
@@ -304,12 +304,13 @@ class MakeCuts(PipePro):
         res.loc[idx,'flag_zcut'] = True
         self.data = res
         
-    def magzcut(self,dmag_min=1.,dmag_max=3.,**kwargs):
+    def magzcut(self,dmag_min=1.,dmag_max=4.5,magabs=-19.1,**kwargs):
         from utils import cal_maglim
         res = self.data
         print("Selecting candidates based on mag vs z: {:.2f} < dmag (from max) < {:.2f}".format(dmag_min,dmag_max))
         res['flag_magzcut'] = False
-        res['maglim'] = res['z'].apply(cal_maglim)
+        func = lambda x: cal_maglim(x,magabs=magabs)
+        res['maglim'] = res['z'].apply(func)
         res['dmag_g'] = res['gmaglatest'] - res['maglim']
         res['dmag_r'] = res['rmaglatest'] - res['maglim']
         idx = ((res['dmag_g'] > dmag_min) & (res['dmag_g'] < dmag_max)) | ((res['dmag_r'] > dmag_min) & (res['dmag_r'] < dmag_max))
@@ -411,7 +412,7 @@ class MakeCuts(PipePro):
             idx = idx & res[flag]
         return res[idx]
     
-    def plot(self):
+    def plot(self,magz_plot=True,magz_band='r',magabs=-19.1,**kwargs):
         from utils import plot_maglims
         print("Plotting MakeCuts...")
 #         plotdata = self.data[self.data.flag_zcut & self.data.flag_magzcut & self.data.flag_rbcut]
@@ -424,7 +425,8 @@ class MakeCuts(PipePro):
             plt.plot(plotdata['z'],plotdata['rmaglatest'],xerr=plotdata['zerr'],color='r',marker='o',label='r')
         plt.ylim(plt.ylim()[::-1])
         plt.legend()
-        plot_maglims()
+        if magz_plot:
+            plot_maglims(band=magz_band,magabs=magabs,**kwargs)
             
 class EarlyClass(PipePro):
     def __init__(self):
